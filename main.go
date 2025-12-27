@@ -111,18 +111,51 @@ func main() {
 func getLocalIPs() ([]net.IP, error) {
 	var ips []net.IP
 
-	addrs, err := net.InterfaceAddrs()
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ips = append(ips, ipnet.IP)
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		// Skip virtual/container interfaces (docker, bridge, veth, etc.)
+		name := iface.Name
+		if isVirtualInterface(name) {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if ipnet.IP.To4() != nil {
+					ips = append(ips, ipnet.IP)
+				}
 			}
 		}
 	}
 
 	return ips, nil
+}
+
+// isVirtualInterface returns true for virtual/container network interfaces
+func isVirtualInterface(name string) bool {
+	virtualPrefixes := []string{
+		"docker", "br-", "veth", "virbr", "lxc", "lxd",
+		"flannel", "cni", "calico", "weave", "podman",
+	}
+	for _, prefix := range virtualPrefixes {
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	// Also filter docker0 specifically
+	return name == "docker0"
 }
