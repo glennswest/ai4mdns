@@ -6,10 +6,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
-
-	"github.com/hashicorp/mdns"
 )
 
 func main() {
@@ -29,7 +28,7 @@ func main() {
 		}
 	}
 
-	// Get local IP addresses for the service
+	// Get local IP addresses for logging
 	ips, err := getLocalIPs()
 	if err != nil {
 		log.Fatalf("Failed to get local IPs: %v", err)
@@ -39,28 +38,29 @@ func main() {
 		log.Fatal("No local IP addresses found")
 	}
 
-	// Create HTTP mDNS service
-	httpService, err := mdns.NewMDNSService(
-		*instance,       // Instance name
-		"_ollama._tcp",  // Service type
-		"",              // Domain (empty = .local)
-		hostname+".",    // Host name
-		*port,           // Port
-		ips,             // IPs
-		[]string{"proto=http", "ollama", "llm", "ai"}, // TXT records
+	// Check if avahi-publish is available
+	if _, err := exec.LookPath("avahi-publish"); err != nil {
+		log.Fatal("avahi-publish not found. Install avahi-utils: apt install avahi-utils")
+	}
+
+	var processes []*exec.Cmd
+
+	// Start HTTP service advertisement
+	httpCmd := exec.Command("avahi-publish", "-s",
+		*instance,
+		"_ollama._tcp",
+		fmt.Sprintf("%d", *port),
+		"proto=http", "ollama", "llm", "ai",
 	)
-	if err != nil {
-		log.Fatalf("Failed to create HTTP mDNS service: %v", err)
-	}
+	httpCmd.Stdout = os.Stdout
+	httpCmd.Stderr = os.Stderr
 
-	// Create HTTP mDNS server
-	httpServer, err := mdns.NewServer(&mdns.Config{Zone: httpService})
-	if err != nil {
-		log.Fatalf("Failed to create HTTP mDNS server: %v", err)
+	if err := httpCmd.Start(); err != nil {
+		log.Fatalf("Failed to start HTTP mDNS advertisement: %v", err)
 	}
-	defer httpServer.Shutdown()
+	processes = append(processes, httpCmd)
 
-	log.Printf("Advertising Ollama HTTP service via mDNS:")
+	log.Printf("Advertising Ollama HTTP service via avahi:")
 	log.Printf("  Instance: %s", *instance)
 	log.Printf("  Service:  _ollama._tcp.local")
 	log.Printf("  Host:     %s", hostname)
@@ -68,28 +68,23 @@ func main() {
 	log.Printf("  Proto:    http")
 	log.Printf("  IPs:      %v", ips)
 
-	// Optionally create HTTPS mDNS service
+	// Optionally start HTTPS service advertisement
 	if *tls {
-		tlsService, err := mdns.NewMDNSService(
-			*instance+"-tls", // Instance name (distinct from HTTP)
-			"_ollama._tcp",   // Same service type
-			"",               // Domain (empty = .local)
-			hostname+".",     // Host name
-			*tlsPort,         // TLS Port
-			ips,              // IPs
-			[]string{"proto=https", "ollama", "llm", "ai"}, // TXT records
+		tlsCmd := exec.Command("avahi-publish", "-s",
+			*instance+"-tls",
+			"_ollama._tcp",
+			fmt.Sprintf("%d", *tlsPort),
+			"proto=https", "ollama", "llm", "ai",
 		)
-		if err != nil {
-			log.Fatalf("Failed to create HTTPS mDNS service: %v", err)
-		}
+		tlsCmd.Stdout = os.Stdout
+		tlsCmd.Stderr = os.Stderr
 
-		tlsServer, err := mdns.NewServer(&mdns.Config{Zone: tlsService})
-		if err != nil {
-			log.Fatalf("Failed to create HTTPS mDNS server: %v", err)
+		if err := tlsCmd.Start(); err != nil {
+			log.Fatalf("Failed to start HTTPS mDNS advertisement: %v", err)
 		}
-		defer tlsServer.Shutdown()
+		processes = append(processes, tlsCmd)
 
-		log.Printf("Advertising Ollama HTTPS service via mDNS:")
+		log.Printf("Advertising Ollama HTTPS service via avahi:")
 		log.Printf("  Instance: %s-tls", *instance)
 		log.Printf("  Service:  _ollama._tcp.local")
 		log.Printf("  Host:     %s", hostname)
@@ -105,7 +100,14 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
-	fmt.Println("\nShutting down mDNS server...")
+	fmt.Println("\nShutting down mDNS advertisements...")
+
+	// Kill all avahi-publish processes
+	for _, cmd := range processes {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}
 }
 
 func getLocalIPs() ([]net.IP, error) {

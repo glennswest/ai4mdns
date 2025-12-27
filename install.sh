@@ -60,6 +60,26 @@ if systemctl is-active --quiet ai4mdns 2>/dev/null; then
     systemctl stop ai4mdns
 fi
 
+# Install avahi-utils for avahi-publish
+echo "Ensuring avahi-utils is installed..."
+if ! command -v avahi-publish &> /dev/null; then
+    apt-get install -y avahi-utils > /dev/null 2>&1
+    if command -v avahi-publish &> /dev/null; then
+        echo "avahi-utils installed successfully"
+    else
+        echo "Warning: Failed to install avahi-utils. mDNS may not work."
+    fi
+else
+    echo "avahi-utils already installed"
+fi
+
+# Ensure avahi-daemon is running
+if ! systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+    echo "Starting avahi-daemon..."
+    systemctl enable avahi-daemon > /dev/null 2>&1
+    systemctl start avahi-daemon
+fi
+
 # Install binary
 echo "Installing binary to $INSTALL_DIR..."
 mv "$TMP_FILE" "$INSTALL_DIR/ai4mdns"
@@ -70,20 +90,15 @@ echo "Creating systemd service..."
 cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Ollama mDNS Advertisement Service
-After=network-online.target
+After=network-online.target avahi-daemon.service
 Wants=network-online.target
+Requires=avahi-daemon.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/ai4mdns -tls -tls-port 11435
 Restart=on-failure
 RestartSec=5
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
